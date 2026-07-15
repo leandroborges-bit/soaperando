@@ -280,7 +280,7 @@ function parseStatementLines(lines, fallbackYear) {
 // STATE
 // ==========================================================================
 let state = null;
-let ui = { screen: 'dashboard', period: '2026-07', filters: { acc: 'all', cat: 'all', tipo: 'all' }, selected: {}, editingCat: null, catDraft: {}, cardTab: 'itau', chat: [], chatInput: '', chatLoading: false, insightText: '', insightLoading: false, exportMsg: '', import: null };
+let ui = { screen: 'dashboard', period: '2026-07', filters: { acc: 'all', cat: 'all', tipo: 'all' }, txSearch: '', selected: {}, editingCat: null, catDraft: {}, cardTab: 'itau', chat: [], chatInput: '', chatLoading: false, insightText: '', insightLoading: false, exportMsg: '', import: null };
 
 function loadState() {
   try {
@@ -344,6 +344,39 @@ function availablePeriods() {
 }
 function txForPeriod(period) { return period === 'all' ? state.tx : state.tx.filter(t => ym(t.date) === period); }
 
+// Apply the global filter set (tipo/acc/cat) to a transaction list
+function applyGlobalFilters(list) {
+  let out = list;
+  if (ui.filters.tipo !== 'all') out = out.filter(t => t.origem === ui.filters.tipo);
+  if (ui.filters.acc !== 'all')  out = out.filter(t => t.acc === ui.filters.acc);
+  if (ui.filters.cat !== 'all')  out = out.filter(t => t.cat === ui.filters.cat);
+  return out;
+}
+// Convenience: filtered tx for the current period
+function currentTx() { return applyGlobalFilters(txForPeriod(ui.period)); }
+
+function activeFilterCount() {
+  let n = 0;
+  if (ui.filters.tipo !== 'all') n++;
+  if (ui.filters.acc !== 'all')  n++;
+  if (ui.filters.cat !== 'all')  n++;
+  return n;
+}
+
+function filterBanner() {
+  const n = activeFilterCount();
+  if (!n) return '';
+  const parts = [];
+  if (ui.filters.tipo !== 'all') parts.push(`<span class="chip">${ui.filters.tipo.toUpperCase()}</span>`);
+  if (ui.filters.acc !== 'all')  parts.push(`<span class="chip">${esc(accById(ui.filters.acc).nome)}</span>`);
+  if (ui.filters.cat !== 'all')  parts.push(`<span class="chip">${esc(catById(ui.filters.cat).nome)}</span>`);
+  return `<div class="filter-banner">
+    <span>Filtrando por:</span>${parts.join('')}
+    <div class="flex-1"></div>
+    <button class="btn" style="padding:6px 12px;font-size:12px;" onclick="app.clearFilters()">Limpar</button>
+  </div>`;
+}
+
 // ==========================================================================
 // AI: window.claude.complete fallback with rule-based responses
 // ==========================================================================
@@ -356,7 +389,7 @@ async function aiComplete({ system, messages, max_tokens }) {
 }
 
 function ruleBasedInsight(period) {
-  const tx = txForPeriod(period);
+  const tx = applyGlobalFilters(txForPeriod(period));
   const rec = tx.filter(x => x.valor > 0).reduce((s, x) => s + x.valor, 0);
   const desp = tx.filter(x => x.valor < 0).reduce((s, x) => s + Math.abs(x.valor), 0);
   const recPJ = tx.filter(x => x.valor > 0 && x.origem === 'pj').reduce((s, x) => s + x.valor, 0);
@@ -413,7 +446,7 @@ function periodLabelPT(period) {
 
 function ruleBasedChat(question, period) {
   const q = normalize(question);
-  const tx = txForPeriod(period);
+  const tx = applyGlobalFilters(txForPeriod(period));
 
   // "quanto gastei em/com X"
   const catMatch = state.categories.find(c => q.includes(normalize(c.nome)));
@@ -482,21 +515,31 @@ function switchTab(name) {
   renderCurrent();
 }
 
-function populateMonthPicker() {
+function populateHeaderFilters() {
   const months = availablePeriods();
   const sel = document.getElementById('month-picker');
-  const cur = ui.period;
   sel.innerHTML = months.map(p => `<option value="${p}">${periodLabelPT(p)}</option>`).join('') + '<option value="all">Todo período</option>';
-  sel.value = months.includes(cur) ? cur : (months[0] || 'all');
+  sel.value = months.includes(ui.period) ? ui.period : (months[0] || 'all');
   ui.period = sel.value;
+
+  const accSel = document.getElementById('acc-picker');
+  accSel.innerHTML = '<option value="all">Todas contas</option>' + state.accounts.map(a => `<option value="${a.id}">${esc(a.nome)}</option>`).join('');
+  accSel.value = ui.filters.acc;
+
+  const catSel = document.getElementById('cat-picker');
+  catSel.innerHTML = '<option value="all">Todas categorias</option>' + state.categories.map(c => `<option value="${c.id}">${esc(c.nome)}</option>`).join('');
+  catSel.value = ui.filters.cat;
+
+  document.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.tipo === ui.filters.tipo));
 }
+function populateMonthPicker() { populateHeaderFilters(); }
 
 // ==========================================================================
 // RENDER: DASHBOARD
 // ==========================================================================
 function renderDashboard() {
   const p = ui.period;
-  const monthTx = txForPeriod(p);
+  const monthTx = currentTx();
   const rec = monthTx.filter(x => x.valor > 0).reduce((s, x) => s + x.valor, 0);
   const desp = monthTx.filter(x => x.valor < 0).reduce((s, x) => s + Math.abs(x.valor), 0);
   const recPJ = monthTx.filter(x => x.valor > 0 && x.origem === 'pj').reduce((s, x) => s + x.valor, 0);
@@ -513,11 +556,11 @@ function renderDashboard() {
   const stops = bd.map(c => { const a = acc / totBd * 100; acc += c.valor; const b = acc / totBd * 100; return `${c.cor} ${a.toFixed(2)}% ${b.toFixed(2)}%`; });
   const donutGradient = stops.length ? `conic-gradient(${stops.join(',')})` : 'conic-gradient(#26262a 0 100%)';
 
-  // Evolution: last 6 months
+  // Evolution: last 6 months (respects global filters)
   const evoMonths = [];
   for (let i = 5; i >= 0; i--) evoMonths.push(shiftMonth(p === 'all' ? today().slice(0, 7) : p, -i));
   const evo = evoMonths.map((mp, i) => {
-    const mtx = state.tx.filter(t => ym(t.date) === mp);
+    const mtx = applyGlobalFilters(state.tx.filter(t => ym(t.date) === mp));
     const r = mtx.filter(x => x.valor > 0).reduce((s, x) => s + x.valor, 0);
     const d = mtx.filter(x => x.valor < 0).reduce((s, x) => s + Math.abs(x.valor), 0);
     const [y, m] = mp.split('-').map(Number);
@@ -531,6 +574,7 @@ function renderDashboard() {
 
   const el = document.getElementById('page-dashboard');
   el.innerHTML = `
+    ${filterBanner()}
     <div class="kpi-grid">
       <div class="card-white">
         <div class="flex-row" style="justify-content:space-between;"><span class="kpi-label" style="color:#55555b;">Saldo consolidado</span><span class="kpi-badge" style="background:#0e0e10;color:#fff;">Total</span></div>
@@ -587,8 +631,8 @@ function renderDashboard() {
         <div class="donut-wrap">
           <div class="donut" style="background:${donutGradient};">
             <div class="donut-inner">
-              <span style="font:600 9px 'Manrope';letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);">Total</span>
-              <span style="font-family:'Sora';font-weight:700;font-size:16px;color:var(--text);">${money0(desp)}</span>
+              <span style="font:600 9px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);">Total</span>
+              <span style="font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;font-size:16px;color:var(--text);">${money0(desp)}</span>
             </div>
           </div>
           <div class="donut-legend">
@@ -608,7 +652,7 @@ function renderDashboard() {
       <div class="card">
         <div class="flex-row mb-18" style="gap:10px;">
           <h3 class="h3">Alertas de anomalia</h3>
-          <span style="font:600 10px 'Manrope';letter-spacing:.1em;text-transform:uppercase;color:var(--purple);border:1px solid var(--purple-border);padding:3px 9px;border-radius:20px;">IA</span>
+          <span style="font:600 10px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--purple);border:1px solid var(--purple-border);padding:3px 9px;border-radius:20px;">IA</span>
         </div>
         <div class="anom-grid">
           ${anomalies.length ? anomalies.map(a => `
@@ -622,8 +666,8 @@ function renderDashboard() {
 
       <div class="card-white" style="padding:24px;display:flex;flex-direction:column;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <h3 style="margin:0;font-family:'Sora';font-weight:700;font-size:19px;letter-spacing:-.01em;color:#0e0e10;">Resumo do mês</h3>
-          <span style="font:700 10px 'Manrope';letter-spacing:.06em;background:#0e0e10;color:#fff;padding:4px 10px;border-radius:20px;">✦ IA</span>
+          <h3 style="margin:0;font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;font-size:19px;letter-spacing:-.01em;color:#0e0e10;">Resumo do mês</h3>
+          <span style="font:700 10px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.06em;background:#0e0e10;color:#fff;padding:4px 10px;border-radius:20px;">✦ IA</span>
         </div>
         <p style="margin:0 0 18px;font-size:13.5px;line-height:1.6;color:#3a3a40;">${esc(quickPitch(p))}</p>
         <div style="margin-top:auto;display:flex;flex-direction:column;gap:9px;">
@@ -636,7 +680,7 @@ function renderDashboard() {
 }
 
 function quickPitch(period) {
-  const tx = txForPeriod(period);
+  const tx = applyGlobalFilters(txForPeriod(period));
   const rec = tx.filter(x => x.valor > 0).reduce((s, x) => s + x.valor, 0);
   const desp = tx.filter(x => x.valor < 0).reduce((s, x) => s + Math.abs(x.valor), 0);
   const sobra = rec > 0 ? Math.round((rec - desp) / rec * 100) : 0;
@@ -648,8 +692,8 @@ function quickPitch(period) {
 }
 
 function computeAnomalies(period) {
-  const cur = txForPeriod(period).filter(x => x.valor < 0);
-  const prev = txForPeriod(shiftMonth(period, -1)).filter(x => x.valor < 0);
+  const cur = applyGlobalFilters(txForPeriod(period)).filter(x => x.valor < 0);
+  const prev = applyGlobalFilters(txForPeriod(shiftMonth(period, -1))).filter(x => x.valor < 0);
   const byCat = {}; cur.forEach(x => byCat[x.cat] = (byCat[x.cat] || 0) + Math.abs(x.valor));
   const byCatPrev = {}; prev.forEach(x => byCatPrev[x.cat] = (byCatPrev[x.cat] || 0) + Math.abs(x.valor));
 
@@ -682,25 +726,20 @@ function computeAnomalies(period) {
 // RENDER: TRANSAÇÕES
 // ==========================================================================
 function renderTransacoes() {
-  let list = txForPeriod(ui.period);
-  if (ui.filters.acc !== 'all')  list = list.filter(x => x.acc === ui.filters.acc);
-  if (ui.filters.cat !== 'all')  list = list.filter(x => x.cat === ui.filters.cat);
-  if (ui.filters.tipo !== 'all') list = list.filter(x => x.origem === ui.filters.tipo);
+  let list = currentTx();
+  // Extra local filter: free-text search
+  const q = normalize(ui.txSearch || '');
+  if (q) list = list.filter(x => normalize(x.desc).includes(q));
   list = list.slice().sort((a, b) => b.date.localeCompare(a.date));
 
   const selectedCount = Object.values(ui.selected).filter(Boolean).length;
-
-  const accOpts   = [{ v: 'all', l: 'Todas as contas' }, ...state.accounts.map(a => ({ v: a.id, l: a.nome }))];
-  const catOpts   = [{ v: 'all', l: 'Todas categorias' }, ...state.categories.map(c => ({ v: c.id, l: c.nome }))];
-  const tipoOpts  = [{ v: 'all', l: 'PF + PJ' }, { v: 'pf', l: 'Somente PF' }, { v: 'pj', l: 'Somente PJ' }];
   const despesaOpts = state.categories.filter(c => c.tipo === 'despesa').map(c => ({ v: c.id, l: c.nome }));
 
   const el = document.getElementById('page-transacoes');
   el.innerHTML = `
+    ${filterBanner()}
     <div class="tx-filters">
-      <select class="select-dark" onchange="app.setFilter('acc', this.value)">${accOpts.map(o => `<option value="${o.v}" ${o.v === ui.filters.acc ? 'selected' : ''}>${o.l}</option>`).join('')}</select>
-      <select class="select-dark" onchange="app.setFilter('cat', this.value)">${catOpts.map(o => `<option value="${o.v}" ${o.v === ui.filters.cat ? 'selected' : ''}>${o.l}</option>`).join('')}</select>
-      <select class="select-dark" onchange="app.setFilter('tipo', this.value)">${tipoOpts.map(o => `<option value="${o.v}" ${o.v === ui.filters.tipo ? 'selected' : ''}>${o.l}</option>`).join('')}</select>
+      <input type="search" class="select-dark" style="min-width:280px;padding:11px 15px;" placeholder="🔎 Buscar descrição…" value="${esc(ui.txSearch || '')}" oninput="app.setTxSearch(this.value)">
       <div class="flex-1"></div>
       <button class="btn btn-light" onclick="document.getElementById('dz').click()">↧ Importar extrato</button>
       <button class="btn" onclick="app.newTx()">+ Nova</button>
@@ -758,9 +797,11 @@ function renderTransacoes() {
 // ==========================================================================
 function renderCategorias() {
   const p = ui.period;
-  const monthTx = txForPeriod(p).filter(x => x.valor < 0);
+  const monthTx = currentTx().filter(x => x.valor < 0);
   const byCat = {}; monthTx.forEach(x => byCat[x.cat] = (byCat[x.cat] || 0) + Math.abs(x.valor));
-  const cats = state.categories.filter(c => c.tipo === 'despesa');
+  let cats = state.categories.filter(c => c.tipo === 'despesa');
+  // Filter category cards by tipo (PF/PJ) — a PF-only view hides PJ categories, etc.
+  if (ui.filters.tipo !== 'all') cats = cats.filter(c => c.origem === ui.filters.tipo || c.origem === 'mix');
   const budgetTotal = cats.reduce((s, c) => s + (c.budget || 0), 0);
   const gastoTotal = Object.values(byCat).reduce((s, v) => s + v, 0);
 
@@ -770,11 +811,12 @@ function renderCategorias() {
 
   const el = document.getElementById('page-categorias');
   el.innerHTML = `
+    ${filterBanner()}
     <div class="grid-2 aside-right">
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
           <div style="display:flex;align-items:baseline;gap:10px;">
-            <span style="font-family:'Sora';font-weight:700;font-size:22px;color:var(--text);">${money(gastoTotal)}</span>
+            <span style="font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;font-size:22px;color:var(--text);">${money(gastoTotal)}</span>
             <span style="font-size:13px;color:var(--muted);">gastos de ${money(budgetTotal)} orçados · ${periodLabelPT(p).split('/')[0].toLowerCase()}</span>
           </div>
           <button class="btn btn-light" onclick="app.startEditCat('new')">+ Nova categoria</button>
@@ -808,7 +850,7 @@ function renderCategorias() {
 
       ${editing ? `
         <div class="cat-edit-panel">
-          <h3 style="margin:0 0 18px;font-family:'Sora';font-weight:700;font-size:20px;color:var(--text);">${editing === 'new' ? 'Nova categoria' : 'Editar categoria'}</h3>
+          <h3 style="margin:0 0 18px;font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;font-size:20px;color:var(--text);">${editing === 'new' ? 'Nova categoria' : 'Editar categoria'}</h3>
           <label class="label">Nome</label>
           <input class="input" value="${esc(draft.nome || '')}" oninput="app.setDraft('nome', this.value)" placeholder="Ex. Educação">
           <label class="label" style="margin-top:16px;">Orçamento mensal (R$)</label>
@@ -832,7 +874,7 @@ function renderCategorias() {
           <div style="width:44px;height:44px;margin:0 auto 12px;border-radius:13px;background:var(--purple-bg);display:flex;align-items:center;justify-content:center;">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>
           </div>
-          <div style="font-family:'Sora';font-weight:600;font-size:18px;color:var(--text-3);margin-bottom:6px;">Orçamento por categoria</div>
+          <div style="font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:18px;color:var(--text-3);margin-bottom:6px;">Orçamento por categoria</div>
           <p style="margin:0;font-size:13px;color:var(--muted);line-height:1.5;">Edite o limite mensal de uma categoria ou crie uma nova. A barra fica vermelha quando o gasto passa do orçamento.</p>
         </div>
       `}
@@ -848,7 +890,11 @@ function renderCartoes() {
   const active = cards.find(c => c.id === ui.cardTab) || cards[0];
   if (!active) { document.getElementById('page-cartoes').innerHTML = '<div class="empty" style="padding:60px;text-align:center;color:var(--muted);">Sem cartões cadastrados.</div>'; return; }
   const p = ui.period;
-  const cardTx = state.tx.filter(x => x.acc === active.id && x.valor < 0 && ym(x.date) === p).sort((a, b) => b.date.localeCompare(a.date));
+  // Card tab overrides the account filter; apply the other filters (tipo, cat)
+  let cardTx = state.tx.filter(x => x.acc === active.id && x.valor < 0 && ym(x.date) === p);
+  if (ui.filters.tipo !== 'all') cardTx = cardTx.filter(x => x.origem === ui.filters.tipo);
+  if (ui.filters.cat !== 'all')  cardTx = cardTx.filter(x => x.cat === ui.filters.cat);
+  cardTx = cardTx.sort((a, b) => b.date.localeCompare(a.date));
   const fatura = cardTx.reduce((s, x) => s + Math.abs(x.valor), 0);
   const uso = Math.min(100, active.limite ? fatura / active.limite * 100 : 0);
   const parcelas = state.tx.filter(x => x.acc === active.id && x.parcela);
@@ -856,6 +902,7 @@ function renderCartoes() {
 
   const el = document.getElementById('page-cartoes');
   el.innerHTML = `
+    ${filterBanner()}
     <div class="card-tabs">
       ${cards.map(c => `
         <button class="card-tab ${c.id === active.id ? 'active' : ''}" onclick="app.setCardTab('${c.id}')">
@@ -883,7 +930,7 @@ function renderCartoes() {
           <div class="parc-item">
             <span class="parc-badge">${esc(p.parcela)}</span>
             <span style="flex:1;font-size:13.5px;color:var(--text-3);">${esc(p.desc)}</span>
-            <span style="font-family:'Sora';font-weight:600;font-size:14px;color:var(--red);">${money(p.valor)}</span>
+            <span style="font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;color:var(--red);">${money(p.valor)}</span>
           </div>
         `).join('')}</div>` : '<div style="font-size:13px;color:var(--muted-2);padding:10px 0;">Nenhuma parcela em aberto neste cartão.</div>'}
       </div>
@@ -896,11 +943,11 @@ function renderCartoes() {
           const c = catById(t.cat);
           return `
             <div class="card-tx-line">
-              <span style="font:600 13px 'Manrope';color:var(--muted-2);width:44px;">${fmtDate(t.date)}</span>
+              <span style="font:600 13px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:var(--muted-2);width:44px;">${fmtDate(t.date)}</span>
               <span style="width:9px;height:9px;border-radius:3px;background:${c.cor};"></span>
               <span style="flex:1;font-size:14px;color:var(--text-2);">${esc(t.desc)}</span>
               ${t.parcela ? `<span style="font-size:10.5px;color:var(--muted);background:var(--panel-2);padding:2px 7px;border-radius:14px;">${esc(t.parcela)}</span>` : ''}
-              <span style="font-family:'Sora';font-weight:600;font-size:14px;color:var(--red);">− ${money(t.valor)}</span>
+              <span style="font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;color:var(--red);">− ${money(t.valor)}</span>
             </div>
           `;
         }).join('') : '<div style="font-size:13px;color:var(--muted-2);padding:10px 0;">Nenhum lançamento neste período.</div>'}
@@ -914,9 +961,9 @@ function renderCartoes() {
               <div style="display:flex;align-items:center;gap:10px;">
                 <span style="width:8px;height:8px;border-radius:50%;background:var(--green);"></span>
                 <span style="font-size:14px;color:var(--text-3);">${esc(f.mes)}</span>
-                <span style="font:600 10px 'Manrope';letter-spacing:.06em;text-transform:uppercase;color:var(--green);">paga</span>
+                <span style="font:600 10px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--green);">paga</span>
               </div>
-              <span style="font-family:'Sora';font-weight:600;font-size:14px;color:var(--muted-3);">${money(f.valor)}</span>
+              <span style="font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;color:var(--muted-3);">${money(f.valor)}</span>
             </div>
           `).join('') : '<div style="font-size:13px;color:var(--muted-2);">Sem histórico.</div>'}
         </div>
@@ -930,7 +977,10 @@ function renderCartoes() {
 // ==========================================================================
 function renderPJ() {
   const p = ui.period;
-  const pjTx = txForPeriod(p).filter(x => x.origem === 'pj');
+  // PJ view: force tipo=pj scope, but still allow acc/cat filters through
+  let pjTx = txForPeriod(p).filter(x => x.origem === 'pj');
+  if (ui.filters.acc !== 'all') pjTx = pjTx.filter(x => x.acc === ui.filters.acc);
+  if (ui.filters.cat !== 'all') pjTx = pjTx.filter(x => x.cat === ui.filters.cat);
   const receitaPJ = pjTx.filter(x => x.valor > 0).reduce((s, x) => s + x.valor, 0);
   const despesaPJ = pjTx.filter(x => x.valor < 0).reduce((s, x) => s + Math.abs(x.valor), 0);
   const reserva = receitaPJ * state.taxPct / 100;
@@ -940,6 +990,7 @@ function renderPJ() {
 
   const el = document.getElementById('page-pj');
   el.innerHTML = `
+    ${filterBanner()}
     <div class="pj-banner">
       <span class="dot"></span>
       <span>Visão exclusiva da <strong>Borges Consultoria ME</strong> — separada da conta pessoal.</span>
@@ -995,13 +1046,13 @@ function renderPJ() {
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted-2);margin-top:4px;"><span>0%</span><span>40%</span></div>
         </div>
         <div class="card">
-          <div style="font:600 11px 'Manrope';letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);margin-bottom:14px;">Fluxo de caixa PJ · ${periodLabelPT(p).split('/')[0].toLowerCase()}</div>
+          <div style="font:600 11px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);margin-bottom:14px;">Fluxo de caixa PJ · ${periodLabelPT(p).split('/')[0].toLowerCase()}</div>
           <div style="display:flex;flex-direction:column;gap:11px;font-size:14px;">
-            <div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Entradas</span><span style="color:var(--green);font-family:'Sora';font-size:15px;font-weight:600;">+ ${money(receitaPJ)}</span></div>
-            <div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Saídas</span><span style="color:var(--red);font-family:'Sora';font-size:15px;font-weight:600;">− ${money(despesaPJ)}</span></div>
-            <div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Reserva imposto</span><span style="color:var(--yellow);font-family:'Sora';font-size:15px;font-weight:600;">− ${money(reserva)}</span></div>
+            <div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Entradas</span><span style="color:var(--green);font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;font-weight:600;">+ ${money(receitaPJ)}</span></div>
+            <div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Saídas</span><span style="color:var(--red);font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;font-weight:600;">− ${money(despesaPJ)}</span></div>
+            <div style="display:flex;justify-content:space-between;"><span style="color:var(--muted);">Reserva imposto</span><span style="color:var(--yellow);font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;font-weight:600;">− ${money(reserva)}</span></div>
             <div style="height:1px;background:var(--border);margin:3px 0;"></div>
-            <div style="display:flex;justify-content:space-between;"><span style="color:var(--text-2);font-weight:600;">Sobra líquida</span><span style="color:var(--green);font-family:'Sora';font-weight:700;font-size:17px;">${money(disponivel)}</span></div>
+            <div style="display:flex;justify-content:space-between;"><span style="color:var(--text-2);font-weight:600;">Sobra líquida</span><span style="color:var(--green);font-family:'Sora',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;font-size:17px;">${money(disponivel)}</span></div>
           </div>
         </div>
       </div>
@@ -1018,6 +1069,7 @@ function renderInsights() {
 
   const el = document.getElementById('page-insights');
   el.innerHTML = `
+    ${filterBanner()}
     <div class="grid-2 eq" style="align-items:start;">
       <div class="card">
         <div class="flex-row mb-16" style="gap:11px;">
@@ -1071,7 +1123,7 @@ function renderConfig() {
                 <div style="font-size:14.5px;font-weight:600;color:var(--text-2);">${esc(a.nome)}</div>
                 <div style="font-size:12px;color:var(--muted);">${accTypeLabel(a.tipo)}</div>
               </div>
-              <span style="font:600 10px 'Manrope';letter-spacing:.06em;color:${a.origem === 'pj' ? '#f5c518' : '#b3aef5'};border:1px solid #2c2c30;padding:3px 9px;border-radius:14px;">${a.origem.toUpperCase()}</span>
+              <span style="font:600 10px 'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.06em;color:${a.origem === 'pj' ? '#f5c518' : '#b3aef5'};border:1px solid #2c2c30;padding:3px 9px;border-radius:14px;">${a.origem.toUpperCase()}</span>
               <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--green);"><span style="width:7px;height:7px;border-radius:50%;background:var(--green);"></span>ativo</span>
             </div>
           `).join('')}
@@ -1259,7 +1311,10 @@ function renderImportList() {
 const app = {
   switchTab,
   handleFiles,
-  setFilter(k, v) { ui.filters[k] = v; ui.selected = {}; renderTransacoes(); },
+  setFilter(k, v) { ui.filters[k] = v; ui.selected = {}; ui.insightText = ''; populateHeaderFilters(); renderCurrent(); },
+  setTipoFilter(v) { ui.filters.tipo = v; ui.selected = {}; ui.insightText = ''; populateHeaderFilters(); renderCurrent(); },
+  setTxSearch(v) { ui.txSearch = v; renderTransacoes(); },
+  clearFilters() { ui.filters = { acc: 'all', cat: 'all', tipo: 'all' }; ui.txSearch = ''; ui.insightText = ''; populateHeaderFilters(); renderCurrent(); },
   toggleSelect(id) { ui.selected[id] = !ui.selected[id]; renderTransacoes(); },
   clearSelection() { ui.selected = {}; renderTransacoes(); },
   applyBulk() {
@@ -1383,7 +1438,7 @@ function downloadFile(name, mime, content) {
 
 function buildAIContext() {
   const p = ui.period;
-  const tx = txForPeriod(p);
+  const tx = applyGlobalFilters(txForPeriod(p));
   const rec = tx.filter(x => x.valor > 0).reduce((s, x) => s + x.valor, 0);
   const desp = tx.filter(x => x.valor < 0).reduce((s, x) => s + Math.abs(x.valor), 0);
   const recPJ = tx.filter(x => x.valor > 0 && x.origem === 'pj').reduce((s, x) => s + x.valor, 0);
@@ -1400,7 +1455,11 @@ if (typeof pdfjsLib !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
 }
 document.querySelectorAll('.nav-btn').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
-document.getElementById('month-picker').addEventListener('change', (e) => { ui.period = e.target.value; renderCurrent(); });
+document.getElementById('month-picker').addEventListener('change', (e) => { ui.period = e.target.value; ui.insightText = ''; renderCurrent(); });
+document.getElementById('acc-picker').addEventListener('change', (e) => app.setFilter('acc', e.target.value));
+document.getElementById('cat-picker').addEventListener('change', (e) => app.setFilter('cat', e.target.value));
+document.querySelectorAll('.seg-btn').forEach(b => b.addEventListener('click', () => app.setTipoFilter(b.dataset.tipo)));
+document.getElementById('btn-clear-filters').addEventListener('click', () => app.clearFilters());
 document.querySelectorAll('.modal-bg').forEach(m => m.addEventListener('click', e => { if (e.target === m) m.classList.remove('active'); }));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.modal-bg.active').forEach(m => m.classList.remove('active')); });
 switchTab('dashboard');

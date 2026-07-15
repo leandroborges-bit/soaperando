@@ -58,17 +58,29 @@
           <div class="kicker" id="kicker">Visão geral</div>
           <h1 class="title" id="title">Dashboard</h1>
         </div>
-        <div class="flex-row">
-          <div class="hchip">
-            <span class="dot" style="background:var(--purple)"></span>
-            <span>PF</span>
-            <span class="sep"></span>
-            <span class="dot" style="background:var(--yellow)"></span>
-            <span>PJ</span>
+        <div class="flex-row" id="header-filters">
+          <div class="filter-seg" role="tablist" aria-label="Origem">
+            <button class="seg-btn" data-tipo="all" title="PF + PJ">
+              <span class="dot" style="background:var(--purple)"></span><span class="dot" style="background:var(--yellow);margin-left:-3px;"></span>
+              <span>Ambos</span>
+            </button>
+            <button class="seg-btn" data-tipo="pf" title="Somente PF">
+              <span class="dot" style="background:var(--purple)"></span><span>PF</span>
+            </button>
+            <button class="seg-btn" data-tipo="pj" title="Somente PJ">
+              <span class="dot" style="background:var(--yellow)"></span><span>PJ</span>
+            </button>
           </div>
           <div class="hchip-month">
-            <select id="month-picker"></select>
+            <select id="acc-picker" title="Conta"></select>
           </div>
+          <div class="hchip-month">
+            <select id="cat-picker" title="Categoria"></select>
+          </div>
+          <div class="hchip-month">
+            <select id="month-picker" title="Período"></select>
+          </div>
+          <button class="btn" id="btn-clear-filters" title="Limpar filtros" style="padding:8px 12px;">↺</button>
         </div>
       </header>
 
